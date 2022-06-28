@@ -112,15 +112,15 @@ mod build {
 
     fn configure_and_build() -> Result<()> {
         let src_dir = OUT_DIR.join("cyclonedds");
-        let build_dir = src_dir.join("build");
-        let install_dir = src_dir.join("install");
+        let build_dir = OUT_DIR.join("build");
+        let install_dir = OUT_DIR.join("install");
 
         fs::create_dir_all(&build_dir)?;
 
         let status = Command::new("cmake")
             // .arg("-DBUILD_IDLC=OFF")
             .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()))
-            .arg("..")
+            .arg(&src_dir)
             .current_dir(&build_dir)
             .status()?;
         ensure!(status.success());
