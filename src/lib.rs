@@ -26,12 +26,11 @@ pub mod dds_error;
 pub use dds_error::DDSError;
 
 //// some macros we need to use in Rust
-pub const DDS_FREE_KEY_BIT: u32 =  0x01;
-pub const DDS_FREE_CONTENTS_BIT:u32 =  0x02;
-pub const DDS_FREE_ALL_BIT:u32 =  0x04;
+pub const DDS_FREE_KEY_BIT: u32 = 0x01;
+pub const DDS_FREE_CONTENTS_BIT: u32 = 0x02;
+pub const DDS_FREE_ALL_BIT: u32 = 0x04;
 
-
-#[derive(Clone,PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct DdsEntity(dds_entity_t);
 
 impl DdsEntity {
@@ -45,10 +44,13 @@ impl DdsEntity {
 
 pub mod builtin_entity {
     use crate::DdsEntity;
-    pub const BUILTIN_TOPIC_DCPSPARTICIPANT_ENTITY : DdsEntity = DdsEntity(crate::BUILTIN_TOPIC_DCPSPARTICIPANT);
-    pub const BUILTIN_TOPIC_DCPSTOPIC_ENTITY : DdsEntity = DdsEntity(crate::BUILTIN_TOPIC_DCPSTOPIC);
-    pub const BUILTIN_TOPIC_DCPSPUBLICATION_ENTITY : DdsEntity = DdsEntity(crate::BUILTIN_TOPIC_DCPSPUBLICATION);
-    pub const BUILTIN_TOPIC_DCPSSUBSCRIPTION : DdsEntity = DdsEntity(crate::BUILTIN_TOPIC_DCPSSUBSCRIPTION);
+    pub const BUILTIN_TOPIC_DCPSPARTICIPANT_ENTITY: DdsEntity =
+        DdsEntity(crate::BUILTIN_TOPIC_DCPSPARTICIPANT);
+    pub const BUILTIN_TOPIC_DCPSTOPIC_ENTITY: DdsEntity = DdsEntity(crate::BUILTIN_TOPIC_DCPSTOPIC);
+    pub const BUILTIN_TOPIC_DCPSPUBLICATION_ENTITY: DdsEntity =
+        DdsEntity(crate::BUILTIN_TOPIC_DCPSPUBLICATION);
+    pub const BUILTIN_TOPIC_DCPSSUBSCRIPTION: DdsEntity =
+        DdsEntity(crate::BUILTIN_TOPIC_DCPSSUBSCRIPTION);
 }
 
 pub type DdsDomainId = dds_domainid_t;

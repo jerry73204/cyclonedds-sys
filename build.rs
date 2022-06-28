@@ -17,31 +17,24 @@
     limitations under the License.
 */
 
-use std::process::Command;
+use anyhow::Result;
 use cc;
+use once_cell::sync::Lazy;
+use std::env;
+use std::path::PathBuf;
+use std::process::Command;
+
+pub static OUT_DIR: Lazy<PathBuf> =
+    Lazy::new(|| env::var_os("OUT_DIR").expect("OUT_DIR is not set").into());
 
 fn main() {
     build::main();
 }
 
-macro_rules! ok(($expression:expr) => ($expression.unwrap()));
 macro_rules! log {
-    ($fmt:expr) => (println!(concat!("cyclonedds-sys/build.rs:{}: ", $fmt), line!()));
-    ($fmt:expr, $($arg:tt)*) => (println!(concat!("cyclonedds-sys/build.rs:{}: ", $fmt),
+    ($fmt:expr) => (eprintln!(concat!("cyclonedds-sys/build.rs:{}: ", $fmt), line!()));
+    ($fmt:expr, $($arg:tt)*) => (eprintln!(concat!("cyclonedds-sys/build.rs:{}: ", $fmt),
     line!(), $($arg)*));
-}
-
-fn run<F>(name: &str, mut configure: F)
-where
-    F: FnMut(&mut Command) -> &mut Command,
-{
-    let mut command = Command::new(name);
-    let configured = configure(&mut command);
-    log!("Executing {:?}", configured);
-    if !ok!(configured.status()).success() {
-        panic!("failed to execute {:?}", configured);
-    }
-    log!("Command {:?} finished successfully", configured);
 }
 
 mod build {
@@ -49,25 +42,27 @@ mod build {
     extern crate bindgen;
 
     use std::env;
+    use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
     //use walkdir::{DirEntry, WalkDir};
     use super::*;
+    use anyhow::ensure;
     use glob::glob;
 
     static ENV_PREFIX: &str = "CYCLONEDDS";
     static LINKLIB: &str = "ddsc";
-    static GIT_COMMIT: &str = "7465083759ef8ee2e119b3ee5ab6fd76ad8dc902";
+    static GIT_COMMIT: &str = "0e2cd3e303be2171dd0e4fc685cc5031f70b0f52";
 
     pub enum HeaderLocation {
-        FromCMakeEnvironment(std::vec::Vec<String>, String),
-        FromYoctoSDKBuild(std::vec::Vec<String>, String),
-        FromEnvironment(std::vec::Vec<String>),
-        FromLocalBuild(std::vec::Vec<String>),
+        FromCMakeEnvironment(Vec<PathBuf>, PathBuf),
+        FromYoctoSDKBuild(Vec<PathBuf>, PathBuf),
+        FromEnvironment(Vec<PathBuf>),
+        FromLocalBuild(Vec<PathBuf>),
     }
 
     impl HeaderLocation {
-        fn add_paths(&mut self, mut path: Vec<String>) {
+        fn add_paths(&mut self, mut path: Vec<PathBuf>) {
             match self {
                 HeaderLocation::FromCMakeEnvironment(paths, _) => paths.append(&mut path),
                 HeaderLocation::FromYoctoSDKBuild(paths, _) => paths.append(&mut path),
@@ -76,98 +71,112 @@ mod build {
             }
         }
 
-        fn get_paths(&self) -> Vec<String> {
+        fn get_paths(&self) -> Vec<PathBuf> {
             match self {
-                HeaderLocation::FromCMakeEnvironment(paths, _) | 
-                HeaderLocation::FromYoctoSDKBuild(paths, _) | 
-                HeaderLocation::FromEnvironment(paths) | 
-                HeaderLocation::FromLocalBuild(paths) => paths.clone()
+                HeaderLocation::FromCMakeEnvironment(paths, _)
+                | HeaderLocation::FromYoctoSDKBuild(paths, _)
+                | HeaderLocation::FromEnvironment(paths)
+                | HeaderLocation::FromLocalBuild(paths) => paths.clone(),
             }
         }
     }
 
     /// download cyclone dds from github
-    fn download() {
+    fn download() -> Result<()> {
         // get head of master for now. We can change to a specific version when
         // needed
 
-        let outdir = env::var("OUT_DIR").expect("OUT_DIR is not set");
-        let srcpath = format!("{}/cyclonedds", &outdir);
-        let cyclonedds_src_path = Path::new(srcpath.as_str());
+        let src_dir = OUT_DIR.join("cyclonedds");
 
-        if !cyclonedds_src_path.exists() {
+        if !src_dir.exists() {
             log!("Cloning cyclonedds from github");
-            run("git", |command| {
-                command
-                    .arg("clone")
-                    .arg("https://github.com/eclipse-cyclonedds/cyclonedds.git")
-                    .current_dir(env::var("OUT_DIR").expect("OUT_DIR is not set").as_str())
-            });
-        } else {
-            log!("Already cloned cyclonedds - just running git checkout");
-            run("git", |command| {
-                command
-                    .arg("checkout")
-                    .arg(GIT_COMMIT)
-                    .current_dir(cyclonedds_src_path.to_str().unwrap())
-            });
+
+            let status = Command::new("git")
+                .arg("clone")
+                .arg("https://github.com/eclipse-cyclonedds/cyclonedds.git")
+                .current_dir(&*OUT_DIR)
+                .status()?;
+            ensure!(status.success());
         }
+
+        log!("Running git checkout");
+        let status = Command::new("git")
+            .arg("checkout")
+            .arg(GIT_COMMIT)
+            .current_dir(&src_dir)
+            .status()?;
+        ensure!(status.success());
+
+        Ok(())
     }
 
-    fn configure_and_build() {
-        let outdir = env::var("OUT_DIR").expect("OUT_DIR is not set");
-        let srcpath = format!("{}/cyclonedds", &outdir);
-        let cyclonedds_src_path = Path::new(srcpath.as_str());
+    fn configure_and_build() -> Result<()> {
+        let src_dir = OUT_DIR.join("cyclonedds");
+        let build_dir = src_dir.join("build");
+        let install_dir = src_dir.join("install");
 
-        run("mkdir", |command| {
-            command
-                .arg("-p")
-                .arg("build")
-                .current_dir(cyclonedds_src_path.to_str().unwrap())
-        });
+        fs::create_dir_all(&build_dir)?;
 
-        run("cmake", |command| {
-            command
-                .arg("-DBUILD_IDLC=OFF")
-                .arg(format!("-DCMAKE_INSTALL_PREFIX={}/install", outdir))
-                .arg("..")
-                .current_dir(format!("{}/build", cyclonedds_src_path.to_str().unwrap()))
-        });
+        let status = Command::new("cmake")
+            // .arg("-DBUILD_IDLC=OFF")
+            .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()))
+            .arg("..")
+            .current_dir(&build_dir)
+            .status()?;
+        ensure!(status.success());
 
-        run("make", |command| {
-            command.current_dir(format!("{}/build", cyclonedds_src_path.to_str().unwrap()))
-        });
+        let status = Command::new("cmake")
+            .arg("--build")
+            .arg(".")
+            .current_dir(&build_dir)
+            .status()?;
+        ensure!(status.success());
 
-        run("make", |command| {
-            command
-                .arg("install")
-                .current_dir(format!("{}/build", cyclonedds_src_path.to_str().unwrap()))
-        });
+        let status = Command::new("cmake")
+            .arg("--build")
+            .arg(".")
+            .arg("--target")
+            .arg("install")
+            .current_dir(&build_dir)
+            .status()?;
+        ensure!(status.success());
+
+        Ok(())
     }
 
-    fn find_iceoryx(iceoryx_version:&str) -> Option<HeaderLocation> {
-          // Check if we are building with an OE SDK and the OECORE_TARGET_SYSROOT is set
-        let iceoryx_header_path = format!("usr/include/iceoryx/{}/iceoryx_binding_c/api.h",iceoryx_version);
-        if let Ok(sysroot) = env::var("OECORE_TARGET_SYSROOT") {
-            let header  = PathBuf::from(&sysroot).join(&iceoryx_header_path);
+    fn find_iceoryx(iceoryx_version: &str) -> Option<HeaderLocation> {
+        // Check if we are building with an OE SDK and the OECORE_TARGET_SYSROOT is set
+        let iceoryx_header_path = format!(
+            "usr/include/iceoryx/{}/iceoryx_binding_c/api.h",
+            iceoryx_version
+        );
+        if let Some(sysroot) = env::var_os("OECORE_TARGET_SYSROOT") {
+            let sysroot: PathBuf = sysroot.into();
+            let header = sysroot.join(&iceoryx_header_path);
             if header.exists() {
-                let iceoryx_include_path = header.parent().unwrap().parent().unwrap().to_str().unwrap();
+                let iceoryx_include_path =
+                    header.parent().unwrap().parent().unwrap().to_str().unwrap();
                 let paths = vec![iceoryx_include_path.into()];
                 //println!("cargo:warning=Found Iceoryx headers in OECORE_TARGET_SYSROOT");
-                
-                return Some(HeaderLocation::FromYoctoSDKBuild(paths,sysroot));
+
+                return Some(HeaderLocation::FromYoctoSDKBuild(paths, sysroot));
             }
         }
 
         // now look in local paths - nothing fancy here for now, just using the paths where iceoryx gets installed on my Ubuntu machine.
-        let iceoryx_header_path = format!("/usr/local/include/iceoryx/{}/iceoryx_binding_c/api.h",iceoryx_version);
+        let iceoryx_header_path = format!(
+            "/usr/local/include/iceoryx/{}/iceoryx_binding_c/api.h",
+            iceoryx_version
+        );
         let header = PathBuf::from(&iceoryx_header_path);
         if header.exists() {
             //println!("cargo:warning=Found Iceoryx headers in {}",iceoryx_header_path);
             let iceoryx_include_path = header.parent().unwrap().parent().unwrap().to_str().unwrap();
-            return Some(HeaderLocation::FromLocalBuild(vec![iceoryx_include_path.into()]));
+            return Some(HeaderLocation::FromLocalBuild(vec![
+                iceoryx_include_path.into()
+            ]));
         }
-        
+
         println!("cargo:warning=Iceoryx headers not found");
         None
     }
@@ -176,26 +185,27 @@ mod build {
         // The library name does not change. Print that out right away
         println!("cargo:rustc-link-lib={}", LINKLIB);
 
-        let outdir = env::var("OUT_DIR").expect("OUT_DIR is not set");
+        // let outdir = env::var("OUT_DIR").expect("OUT_DIR is not set");
 
         // Check if we are building with an OE SDK and the OECORE_TARGET_SYSROOT is set
-        if let Ok(sysroot) = env::var("OECORE_TARGET_SYSROOT") {
-            let header  = PathBuf::from(&sysroot).join("usr/include/dds/dds.h");
+        if let Some(sysroot) = env::var_os("OECORE_TARGET_SYSROOT") {
+            let sysroot: PathBuf = sysroot.into();
+            let header = sysroot.join("usr/include/dds/dds.h");
             if header.exists() {
                 let paths = vec![sysroot.clone()];
                 println!("Found OECORE_TARGET_SYSROOT");
-                return Some(HeaderLocation::FromYoctoSDKBuild(paths,sysroot));
+                return Some(HeaderLocation::FromYoctoSDKBuild(paths, sysroot));
             }
         }
-        
+
         //first priority is environment variable.
         if let Ok(dir) = env::var(format!("{}_LIB_DIR", ENV_PREFIX)) {
             println!("cargo:rustc-link-search={}", dir);
 
             // Now find the include path
-            if let Ok(dir) = env::var(format!("{}_INCLUDE_DIR", ENV_PREFIX)) {
-                let path = format!("{}/dds/dds.h", &dir);
-                let path = Path::new(&path);
+            if let Some(dir) = env::var_os(format!("{}_INCLUDE_DIR", ENV_PREFIX)) {
+                let dir: PathBuf = dir.into();
+                let path = dir.join("dds").join("dds.h");
                 if path.exists() {
                     println!("Found {}", &path.to_str().unwrap());
                     let paths = vec![dir];
@@ -212,10 +222,10 @@ mod build {
         // now check if building using CMAKE. CycloneDDS has a cmake
         // build environment. When building within CMake, the cyclonedds need not
         // be "installed", so multiple include paths are required.
-        else if let Ok(dir) = env::var("CMAKE_BINARY_DIR") {
-            let cmake_bin_dir = &dir;
-            let lib_dir = Path::new(&dir).join("lib");
-            println!("cargo:rustc-link-search={:}", lib_dir.display());
+        else if let Some(cmake_bin_dir) = env::var_os("CMAKE_BINARY_DIR") {
+            let cmake_bin_dir: PathBuf = cmake_bin_dir.into();
+            let lib_dir = cmake_bin_dir.join("lib");
+            println!("cargo:rustc-link-search={}", lib_dir.display());
 
             if let Ok(dir) = env::var("CMAKE_SOURCE_DIR") {
                 println!(
@@ -225,7 +235,7 @@ mod build {
                 let cmake_src_dir = Path::new(&dir);
                 let glob_pattern = format!("{}/**/dds/dds.h", cmake_src_dir.display());
                 println!("Glob pattern: {}", &glob_pattern);
-                let mut paths = std::vec::Vec::new();
+                let mut paths = vec![];
                 for entry in glob(&glob_pattern).expect("Glob pattern error") {
                     match entry {
                         Ok(path) => {
@@ -237,15 +247,17 @@ mod build {
                                 .collect::<Vec<&str>>();
                             let mut cyclone_src = String::from(cyclone_src[0]);
                             cyclone_src.push_str("cyclonedds");
+                            let cyclone_src = Path::new(&cyclone_src);
 
-                            paths.push(format!("{}/src/core/ddsc/include", cyclone_src));
-                            paths.push(format!("{}/src/core/include", cyclone_src));
+                            paths.push(cyclone_src.join("src/core/ddsc/include"));
+                            paths.push(cyclone_src.join("src/core/include"));
 
                             //
-                            paths.push(format!(
-                                "{}/src/core/include",
-                                find_cyclone_bin_dir(cmake_bin_dir).unwrap()
-                            ));
+                            paths.push(
+                                find_cyclone_bin_dir(&cmake_bin_dir)
+                                    .unwrap()
+                                    .join("src/core/include"),
+                            );
 
                             println!("{:?}", paths);
                             break;
@@ -254,14 +266,17 @@ mod build {
                     }
                 }
                 // now get the sysroot
-                if let Ok(toolchain_sysroot) = env::var("TOOLCHAIN_SYSROOT") {
+                if let Some(toolchain_sysroot) = env::var_os("TOOLCHAIN_SYSROOT") {
                     Some(HeaderLocation::FromCMakeEnvironment(
                         paths,
-                        toolchain_sysroot,
+                        toolchain_sysroot.into(),
                     ))
                 } else {
                     println!("Unable to get TOOLCHAIN_SYSROOT");
-                    Some(HeaderLocation::FromCMakeEnvironment(paths, "/".to_string()))
+                    Some(HeaderLocation::FromCMakeEnvironment(
+                        paths,
+                        PathBuf::from("/"),
+                    ))
                 }
             } else {
                 None
@@ -275,23 +290,23 @@ mod build {
             let path = Path::new(&path);
             if path.exists() {
                 println!("Found {}", &path.to_str().unwrap());
-                let paths = vec![String::from("/usr/local/include")];
+                let paths = vec![PathBuf::from("/usr/local/include")];
                 Some(HeaderLocation::FromEnvironment(paths))
             } else {
                 println!("Cannot find dds/dds.h attempting to build");
-                download();
-                configure_and_build();
-                let local_build_libpath = format!("{}/install/lib/libddsc.so", &outdir);
-                let local_build_so = Path::new(local_build_libpath.as_str());
+                download().unwrap();
+                configure_and_build().unwrap();
+
+                let lib_dir = OUT_DIR.join("install").join("lib");
+                let include_dir = OUT_DIR.join("install").join("include");
+                let local_build_so = lib_dir.join("libddsc.so");
 
                 if local_build_so.exists() {
-                    println!("cargo:rustc-link-search={}/install/lib", &outdir);
-                    let include_dir = String::from(format!("{}/install/include", &outdir));
-                    let path = format!("{}/dds/dds.h", &include_dir);
-                    let path = Path::new(&path);
+                    println!("cargo:rustc-link-search={}", lib_dir.display());
+                    let path = include_dir.join("dds").join("dds.h");
 
                     if path.exists() {
-                        println!("Found {}", &path.to_str().unwrap());
+                        println!("Found {}", path.display());
                         let paths = vec![include_dir];
                         Some(HeaderLocation::FromLocalBuild(paths))
                     } else {
@@ -305,11 +320,8 @@ mod build {
         }
     }
 
-    fn find_cyclone_bin_dir(cmake_bin_dir: &str) -> Option<String> {
-        Some(format!(
-            "{}/sys/cyclonedds/src/ddsrt/include",
-            cmake_bin_dir
-        ))
+    fn find_cyclone_bin_dir(cmake_bin_dir: &Path) -> Option<PathBuf> {
+        Some(cmake_bin_dir.join("sys/cyclonedds/src/ddsrt/include"))
     }
 
     fn add_whitelist(builder: bindgen::Builder) -> bindgen::Builder {
@@ -578,15 +590,15 @@ mod build {
         .constified_enum("dds_status_id")
     }
 
-    pub fn generate(include_paths: &std::vec::Vec<String>, maybe_sysroot: Option<&String>) {
+    pub fn generate(include_paths: &Vec<PathBuf>, maybe_sysroot: Option<&PathBuf>) {
         let mut bindings = bindgen::Builder::default().header("wrapper.h");
 
         for path in include_paths {
-            bindings = bindings.clang_arg(format!("-I{}", path));
+            bindings = bindings.clang_arg(format!("-I{}", path.display()));
         }
 
         if let Some(sysroot) = maybe_sysroot {
-            bindings = bindings.clang_arg(format!("--sysroot={}", sysroot));
+            bindings = bindings.clang_arg(format!("--sysroot={}", sysroot.display()));
         }
 
         let gen = add_whitelist(bindings)
@@ -616,18 +628,26 @@ mod build {
 
         match &headerloc {
             HeaderLocation::FromCMakeEnvironment(paths, sysroot) => generate(&paths, Some(sysroot)),
-            HeaderLocation::FromEnvironment(paths) | HeaderLocation::FromLocalBuild(paths)  => generate(&paths, None),
+            HeaderLocation::FromEnvironment(paths) | HeaderLocation::FromLocalBuild(paths) => {
+                generate(&paths, None)
+            }
             HeaderLocation::FromYoctoSDKBuild(paths, sysroot) => generate(&paths, Some(sysroot)),
         }
 
         match &headerloc {
-            HeaderLocation::FromCMakeEnvironment(paths, sysroot) => compile_inlines(&paths, Some(sysroot)),
-            HeaderLocation::FromEnvironment(paths) | HeaderLocation::FromLocalBuild(paths)  => compile_inlines(&paths, None),
-            HeaderLocation::FromYoctoSDKBuild(paths, sysroot) => compile_inlines(&paths, Some(sysroot)),
+            HeaderLocation::FromCMakeEnvironment(paths, sysroot) => {
+                compile_inlines(&paths, Some(sysroot))
+            }
+            HeaderLocation::FromEnvironment(paths) | HeaderLocation::FromLocalBuild(paths) => {
+                compile_inlines(&paths, None)
+            }
+            HeaderLocation::FromYoctoSDKBuild(paths, sysroot) => {
+                compile_inlines(&paths, Some(sysroot))
+            }
         }
     }
 
-    fn compile_inlines(include_paths: &Vec<String>, _maybe_sysroot: Option<&String>) {
+    fn compile_inlines(include_paths: &Vec<PathBuf>, _maybe_sysroot: Option<&PathBuf>) {
         let mut cc = cc::Build::new();
 
         cc.file("inline_functions.c");
@@ -640,7 +660,5 @@ mod build {
         //if let Some(sysroot) = maybe_sysroot {
         //    cc.s
         //}
-
-
     }
 }
