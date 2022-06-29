@@ -183,7 +183,7 @@ mod build {
 
     fn find_cyclonedds() -> Option<HeaderLocation> {
         // The library name does not change. Print that out right away
-        println!("cargo:rustc-link-lib={}", LINKLIB);
+        println!("cargo:rustc-link-lib=dylib={}", LINKLIB);
 
         // let outdir = env::var("OUT_DIR").expect("OUT_DIR is not set");
 
@@ -200,7 +200,7 @@ mod build {
 
         //first priority is environment variable.
         if let Ok(dir) = env::var(format!("{}_LIB_DIR", ENV_PREFIX)) {
-            println!("cargo:rustc-link-search={}", dir);
+            println!("cargo:rustc-link-search=native={}", dir);
 
             // Now find the include path
             if let Some(dir) = env::var_os(format!("{}_INCLUDE_DIR", ENV_PREFIX)) {
@@ -225,7 +225,7 @@ mod build {
         else if let Some(cmake_bin_dir) = env::var_os("CMAKE_BINARY_DIR") {
             let cmake_bin_dir: PathBuf = cmake_bin_dir.into();
             let lib_dir = cmake_bin_dir.join("lib");
-            println!("cargo:rustc-link-search={}", lib_dir.display());
+            println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
             if let Ok(dir) = env::var("CMAKE_SOURCE_DIR") {
                 println!(
@@ -302,7 +302,10 @@ mod build {
                 let local_build_so = lib_dir.join("libddsc.so");
 
                 if local_build_so.exists() {
-                    println!("cargo:rustc-link-search={}", lib_dir.display());
+                    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+                    // println!("cargo:rustc-link-arg=-Wl,-rpath={}", lib_dir.display());
+                    // println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
+
                     let path = include_dir.join("dds").join("dds.h");
 
                     if path.exists() {
